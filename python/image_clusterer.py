@@ -1,8 +1,9 @@
-import matplotlib
+import time
+from multiprocessing import Process
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import ViTModel, ViTFeatureExtractor
 
-matplotlib.use('MacOSX')
+from sklearn.metrics import adjusted_rand_score
 import networkx as nx
 from anytree import Node, RenderTree, LevelOrderIter, findall
 from PIL import Image
@@ -10,18 +11,28 @@ import cv2
 import os
 import numpy as np
 
-sift = cv2.SIFT_create()
-
 
 class ImageClusterer:
-    def __init__(self, model_name='google/vit-base-patch16-224', threshold=0.3):
+    def __init__(self, groups, model_name='google/vit-base-patch16-224', similarity_threshold=0.35, sift_threshold=0.6, correspondences_threshold=20):
+        self.image_path_indeces = {}
+        self.image_paths = []
         self.model = ViTModel.from_pretrained(model_name)
         self.feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
-        self.threshold = threshold
+        self.similarity_threshold = similarity_threshold
+        self.sift_threshold = sift_threshold
+        self.correspondences_threshold = correspondences_threshold
         self.graph = nx.Graph()
         self.trees = []
         self.matches_dict = {}
         self.homographies = {}
+
+        # self.groups = [20, 12, 8]
+        self.ground_truth = []
+        index = 0
+        for length in self.groups:
+            for i in range(length):
+                self.ground_truth.append(index)
+            index += 1
 
     def extract_features(self, images):
         # get the matrix attribute of each image in images
@@ -39,10 +50,17 @@ class ImageClusterer:
 
     def create_similarity_graph(self, sim_matrix, images):
         # Create a graph based on similarity above a threshold
+        count = 0
+        print(f"len of sim_matrix: {len(sim_matrix)}")
         for i in range(len(sim_matrix)):
             for j in range(i + 1, len(sim_matrix)):
-                if sim_matrix[i, j] > self.threshold and self.match_features(images[i], images[j], sim_matrix[i, j]):
-                    self.graph.add_edge(images[i], images[j], weight=sim_matrix[i, j])
+                # if sim_matrix[i, j] > self.similarity_threshold and self.match_features(images[i], images[j], sim_matrix[i, j]):
+                if sim_matrix[i, j] > self.similarity_threshold:
+                    count += 1
+                    if self.match_features(images[i], images[j], sim_matrix[i, j]):
+                        self.graph.add_edge(images[i], images[j], weight=sim_matrix[i, j])
+        print(f"compare counts: {count}")
+
 
     def match_features(self, image1, image2, similarity):
         # Initialize FLANN based matcher
@@ -59,8 +77,8 @@ class ImageClusterer:
         good_matches = [m1 for m1 in matches1to2 if
                         any(m1.queryIdx == m2.trainIdx and m1.trainIdx == m2.queryIdx for m2 in matches2to1)]
 
-        if len(good_matches) >= 20:
-            print('Good matches:', image1.name, image2.name, len(good_matches), similarity)
+        if len(good_matches) >= self.correspondences_threshold:
+            # print('Good matches:', image1.name, image2.name, len(good_matches), similarity)
             self.matches_dict[(image1.name, image2.name)] = good_matches
             self.matches_dict[(image2.name, image1.name)] = [m2 for m2 in matches2to1 if
                         any(m2.queryIdx == m1.trainIdx and m2.trainIdx == m1.queryIdx for m1 in matches1to2)]
@@ -97,7 +115,7 @@ class ImageClusterer:
         # Filter matches using the Lowe's ratio test
         good_matches = []
         for m, n in matches:
-            if m.distance < 0.6 * n.distance:
+            if m.distance < self.sift_threshold * n.distance:
                 good_matches.append(m)
         return good_matches
 
@@ -131,24 +149,6 @@ class ImageClusterer:
                 best_max_depth = subtree_max_depth
 
         return best_root, node_depth
-
-    def balance_tree(self, root):
-        new_root, node_depth = self.find_new_root(root)
-        if new_root != root:
-            new_root.parent = None  # Make the new root the actual root
-            # Adjust the tree by inverting the parent-child relationship as needed
-            all_nodes = list(LevelOrderIter(new_root))
-            for node in all_nodes:
-                for child in list(node.children):
-                    # Check if child's original depth is less than the node's depth (it was a parent before)
-                    if node_depth[child] < node_depth[node]:
-                        # Change the parent of the child's children to this node
-                        grandchildren = list(child.children)
-                        child.children = []
-                        for grandchild in grandchildren:
-                            grandchild.parent = child
-                        child.parent = node
-        return new_root
 
     def cluster_images(self, image_paths):
         features = self.extract_features(image_paths)
@@ -251,13 +251,43 @@ class ImageClusterer:
         cv2.imwrite('../result/' + root.name + '.jpg', canvas)
         return canvas
 
+    def load_images_from_folder(self, folder_path):
+        # Supported image formats
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
+
+        # List all files in the directory
+        files = os.listdir(folder_path)
+
+        # Filter and load images
+        self.image_paths = [os.path.join(folder_path, file) for file in files if
+                       os.path.splitext(file)[1].lower() in valid_extensions]
+        self.image_paths.sort()
+        index = 0
+        for image_path in self.image_paths:
+            self.image_path_indeces[image_path] = index
+            index += 1
+        return [MyImage(x) for x in self.image_paths]
+
+    def measure_grouping(self):
+        # define predictions as a 140 long list
+        predictions = [-1] * sum(self.groups)
+        index = 0
+        for tree in self.trees:
+            # traverse each tree, assign the same group number to each image in the tree
+            for node in LevelOrderIter(tree):
+                predictions[self.image_path_indeces[node.image.path]] = index
+            index += 1
+        print(self.ground_truth)
+        print(predictions)
+        print(self.similarity_threshold, self.sift_threshold, self.correspondences_threshold, adjusted_rand_score(self.ground_truth, predictions))
+
 
 class MyImage:
     def __init__(self, image_path):
         self.path = image_path
         self.name = image_path.split('/')[-1].split('.')[0]
         self.matrix = Image.open(image_path)
-        self.key_points, self.descriptors = sift.detectAndCompute(
+        self.key_points, self.descriptors = cv2.SIFT_create().detectAndCompute(
             cv2.cvtColor(cv2.imread(self.path), cv2.COLOR_BGR2GRAY), None)
 
     # hashable
@@ -272,30 +302,39 @@ class MyImage:
         return self.name == other.name
 
 
-def load_images_from_folder(folder_path):
-    # Supported image formats
-    valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
-
-    # List all files in the directory
-    files = os.listdir(folder_path)
-
-    # Filter and load images
-    image_paths = [os.path.join(folder_path, file) for file in files if
-                   os.path.splitext(file)[1].lower() in valid_extensions]
-
-    return [MyImage(x) for x in image_paths]
-
-
 if __name__ == '__main__':
     # image_paths = []
     # images = [MyImage(x+'.jpg') for x in image_paths]
-    folder_path = '../data'
-    images = load_images_from_folder(folder_path)
-    clusterer = ImageClusterer()
-    graph = clusterer.cluster_images(images)
+    # for i in [0.56, 0.57, 0.58, 0.59]:
+    #     print('Threshold:', i)
+    #     clusterer = ImageClusterer(similarity_threshold=i)
+    #     folder_path = '../data'
+    #     images = clusterer.load_images_from_folder(folder_path)
+    #     graph = clusterer.cluster_images(images)
+    #     #
+    #     tree_roots = clusterer.construct_trees_from_components()
+    #     # clusterer.display_trees(tree_roots)
+    #
+    #     clusterer.measure_grouping()
 
-    tree_roots = clusterer.construct_trees_from_components()
-    clusterer.display_trees(tree_roots)
-    clusterer.calculate_homography_to_root()
-    for tree in tree_roots:
-        clusterer.stitch_images_with_perspective(tree, 2)
+    for i in [-1, 0.35, 0.4, 0.45, 0.5]:
+        start_time = time.time()
+        clusterer = ImageClusterer([20, 12, 8, 8, 10, 7, 12, 8, 7, 13, 11, 9, 8, 7], similarity_threshold=i, sift_threshold=0.6, correspondences_threshold=20)
+        folder_path = '../data'
+        images = clusterer.load_images_from_folder(folder_path)
+        clusterer.cluster_images(images)
+        tree_roots = clusterer.construct_trees_from_components()
+        # clusterer.display_trees(tree_roots)
+        clusterer.measure_grouping()
+
+        # for i in [0.36, 0.37, 0.38, 0.39]:
+        #     for j in [0.8]:
+        #         for k in [20]:
+        #             start_time = time.time()
+        #             task(i, j, k)
+        #             print(f"Elapsed time: {time.time() - start_time} seconds")
+        # clusterer.calculate_homography_to_root()
+        # for tree in tree_roots:
+        #     clusterer.stitch_images_with_perspective(tree, 5)
+        print(f"Elapsed time: {time.time() - start_time} seconds")
+

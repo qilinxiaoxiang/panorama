@@ -1,4 +1,4 @@
-# Integrating Transformer Models and Traditional Feature-Matching Techniques for Enhanced Panorama Generation and Autostitching
+# Innovative Fusion of Transformer Models with SIFT for Superior Panorama Stitching
 This repository hosts the complete suite of resources used in the research project aimed at improving panorama generation through the novel application of transformer models combined with traditional image stitching techniques.
 
 ## Project Overview
@@ -23,7 +23,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 If you use the materials from this repository in your work, please cite it as follows:
 
-Xiang. (2024). Integrating Transformer Models and Traditional Feature-Matching Techniques for Enhanced Panorama Generation and Autostitching. GitHub repository. Available at https://github.com/qilinxiaoxiang/panorama
+Xiang. (2024). Innovative Fusion of Transformer Models with SIFT for Superior Panorama Stitching.
 
 ## Contact
 
